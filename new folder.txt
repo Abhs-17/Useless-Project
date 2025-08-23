@@ -1,0 +1,212 @@
+import subprocess
+import sys
+import importlib
+import os
+import ast
+from colorama import Fore, Style, init
+
+# Initialize color output for Windows/Mac/Linux
+init(autoreset=True)
+
+def is_installed(package):
+    """Check if a package is already installed."""
+    try:
+        __import__(package)
+        return True
+    except ImportError:
+        return False
+
+def install_from_file(filename):
+    """Install packages listed in the requirements file."""
+    try:
+        with open(filename) as file:
+            for line in file:
+                dep = line.strip()
+                if dep and not dep.startswith("#"):
+                    pkg_name = dep.split("==")[0]  # Remove version for check
+                    if is_installed(pkg_name):
+                        print(Fore.GREEN + f"✅ {pkg_name} is already installed. Skipping...")
+                    else:
+                        print(Fore.CYAN + f"📦 Installing {dep}...")
+                        subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
+    except FileNotFoundError:
+        print(Fore.RED + f"❌ Requirements file '{filename}' not found. Please create it.")
+
+def uninstall_from_file(filename):
+    """Uninstall packages listed in the requirements file."""
+    try:
+        with open(filename) as file:
+            for line in file:
+                dep = line.strip()
+                if dep and not dep.startswith("#"):
+                    pkg_name = dep.split("==")[0]
+                    if is_installed(pkg_name):
+                        print(Fore.YELLOW + f"🗑 Uninstalling {pkg_name}...")
+                        subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", pkg_name])
+                    else:
+                        print(Fore.GREEN + f"✅ {pkg_name} is not installed. Skipping...")
+    except FileNotFoundError:
+        print(Fore.RED + f"❌ Requirements file '{filename}' not found. Please create it.")
+
+def generate_requirements(filename):
+    """Generate a requirements file from currently installed packages."""
+    print(Fore.CYAN + f"📝 Generating {filename} from installed packages...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "freeze"],
+        stdout=subprocess.PIPE,
+        text=True
+    )
+    with open(filename, "w") as f:
+        f.write(result.stdout)
+    print(Fore.GREEN + f"✅ Requirements saved to {filename}")
+
+def smart_import(module_name):
+    """Try importing a module, install if missing."""
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        print(Fore.YELLOW + f"🚀 Module '{module_name}' not found. Installing...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", module_name])
+        print(Fore.GREEN + f"✅ Module '{module_name}' installed successfully.")
+        return importlib.import_module(module_name)
+
+def run_script(script_name):
+    """Run a Python script, auto-installing missing modules if necessary."""
+    while True:
+        try:
+            subprocess.check_call([sys.executable, script_name])
+            break  # If script runs successfully, exit loop
+        except subprocess.CalledProcessError:
+            # Script error unrelated to imports
+            raise
+        except ModuleNotFoundError as e:
+            missing_pkg = str(e).split("'")[1]
+            print(Fore.YELLOW + f"Module '{missing_pkg}' is missing. Installing...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", missing_pkg])
+            print(Fore.GREEN + f"✅ Module '{missing_pkg}' installed. Retrying...")
+
+def find_python_files(directory="."):
+    """
+    Finds all Python files (.py) in a given directory and its subdirectories.
+
+    Args:
+        directory (str): The root directory to start scanning from.
+
+    Returns:
+        list: A list of paths to the found Python files.
+    """
+    python_files = []
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith(".py"):
+                python_files.append(os.path.join(root, file))
+    return python_files
+
+def extract_library_names(file_path):
+    """
+    Extracts library names from import statements in a Python file.
+
+    Args:
+        file_path (str): The path to the Python file.
+
+    Returns:
+        list: A list of unique library names found in the file.
+    """
+    libraries = set()
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            node = ast.parse(file.read())
+            for item in ast.walk(node):
+                if isinstance(item, ast.Import):
+                    for alias in item.names:
+                        libraries.add(alias.name.split('.')[0])
+                elif isinstance(item, ast.ImportFrom):
+                    if item.module is not None:
+                         libraries.add(item.module.split('.')[0])
+    except FileNotFoundError:
+        print(f"Error: File not found at {file_path}")
+    except SyntaxError:
+        print(f"Error: Could not parse file due to syntax error at {file_path}")
+    except Exception as e:
+        print(f"An unexpected error occurred while processing {file_path}: {e}")
+
+    return list(libraries)
+
+def get_installed_libraries():
+    """
+    Gets a set of installed library names using pip list.
+
+    Returns:
+        set: A set of installed library names.
+    """
+    installed = set()
+    try:
+        result = subprocess.check_output([sys.executable, "-m", "pip", "list", "--format=freeze"], encoding='utf-8')
+        for line in result.strip().split('\n'):
+             if line and not line.startswith('#'):
+                package_name = line.split('==')[0]
+                installed.add(package_name)
+    except subprocess.CalledProcessError as e:
+        print(f"Error running pip list: {e}")
+    return installed
+
+
+def automate_library_installation(directory="."):
+    """
+    Scans a project directory for Python files, identifies imported libraries,
+    checks for missing libraries, and automatically installs them using pip.
+
+    Args:
+        directory (str): The root directory to start scanning from.
+    """
+    print(f"🚀 Starting automated library installation process in directory: {directory}")
+
+    print("Scanning for Python files...")
+    project_python_files = find_python_files(directory)
+
+    if not project_python_files:
+        print("🔍 No Python files found in the project directory. Exiting.")
+        return []
+
+    print(f"Found {len(project_python_files)} Python files.")
+
+    print("\nExtracting library names from import statements...")
+    all_libraries = set()
+    for file_path in project_python_files:
+        libraries_in_file = extract_library_names(file_path)
+        all_libraries.update(libraries_in_file)
+
+    all_libraries_list = list(all_libraries)
+    print(f"Found {len(all_libraries_list)} unique libraries required.")
+
+    print("\nChecking installed libraries...")
+    installed_libraries = get_installed_libraries()
+    print(f"Found {len(installed_libraries)} installed libraries.")
+
+    print("\nIdentifying missing libraries...")
+    required_libraries_set = set(all_libraries_list)
+    missing_libraries_set = required_libraries_set - installed_libraries
+    missing_libraries = list(missing_libraries_set)
+
+    if not missing_libraries:
+        print("✅ No missing libraries found. No installation needed.")
+    else:
+        print(f"📦 Found {len(missing_libraries)} missing libraries. Attempting to install...")
+        for library in missing_libraries:
+            try:
+                print(f"Installing {library}...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", library])
+                print(f"Successfully installed {library}")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Error installing {library}: {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred while installing {library}: {e}")
+
+        print("✅ Installation process complete.")
+
+    return missing_libraries
+
+if __name__ == "__main__":
+    # Example usage: Run the automation on the current directory
+    missing = automate_library_installation()
+    print(f"\nLibraries that were missing and attempted to install: {missing}")
